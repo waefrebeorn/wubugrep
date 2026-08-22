@@ -1,0 +1,12 @@
+# build artifacts
+wubugrep
+wubugrep_static
+wubre_test
+*.o
+*.so
+*.gcda
+*.gcno
+
+# corpora / scratch
+*.txt.tmp
+corpus*
