@@ -316,6 +316,21 @@ static void on_regex_match(long line, void *ctx) {
     if (!g_opt_count) emit_line(c->out, c->fname, c->line_base + (size_t)line + 1, ls, (size_t)(le - ls));
 }
 
+/* Pinned-literal per-line NFA context */
+typedef struct {
+    obuf_t *out; const char *fname; size_t line_no;
+    const unsigned char *ls; size_t llen;
+    range_res_t *res;
+} pln_ctx_t;
+static void on_line_match(long line, void *ctx) {
+    (void)line;
+    pln_ctx_t *c = (pln_ctx_t*)ctx;
+    c->res->matched = 1; c->res->match_count++;
+    if (!g_opt_quiet && !g_opt_files_no && !g_opt_count)
+        emit_line(c->out, c->fname, c->line_no, c->ls, c->llen);
+    g_found_any = 1;
+}
+
 static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
                        size_t line_base, range_res_t *res, const char *fname) {
     const unsigned char *end = base + size;
@@ -381,6 +396,59 @@ static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
      * for the common case (no -v); -v keeps the per-line fallback below.
      * The literal prefilter gate is checked ONCE in process_mmap; a reject
      * returns before any chunk is spawned, so it is never re-tested here. */
+    /* SOTA-3: pinned-literal engine for single-required-literal patterns.
+     * memmem the required literal to find candidate LINES, run the NFA per
+     * candidate line only. Density cap falls back to whole-buffer NFA. */
+    if (g_opt_regex && !g_opt_invert) {
+        int pinlen_s = 0;
+        const unsigned char *cand = wubre_litpref_rarest(g_re, &pinlen_s, 0);
+        if (cand && pinlen_s >= 3) {
+            size_t hits = 0;
+            {
+                const unsigned char *p = base; size_t rem = size;
+                while (rem >= (size_t)pinlen_s) {
+                    const unsigned char *h = memmem(p, rem, cand, (size_t)pinlen_s);
+                    if (!h) break;
+                    hits++;
+                    p = h + 1; rem = (size_t)(end - p);
+                    if (hits > 262144) break;
+                }
+            }
+            if (hits > 0 && hits <= 262144 && hits * 4096 < size) {
+                pln_ctx_t pc = { out, fname, line_base, NULL, 0, res };
+                const unsigned char *skip_until = NULL;
+                const unsigned char *p = base; size_t rem = size;
+                const unsigned char *nlscan = base;   /* incremental newline scan */
+                size_t nl_before_ls = 0;
+                while (rem >= (size_t)pinlen_s) {
+                    const unsigned char *h = memmem(p, rem, cand, (size_t)pinlen_s);
+                    if (!h) break;
+                    if (skip_until && h < skip_until) {
+                        /* this hit is on a line we already tested */
+                        const unsigned char *le0 = memchr(h, '\n', (size_t)(end - h));
+                        p = le0 ? le0 + 1 : end; rem = (size_t)(end - p);
+                        continue;
+                    }
+                    const unsigned char *ls = h;
+                    while (ls > base && ls[-1] != '\n') ls--;
+                    const unsigned char *le = memchr(h, '\n', (size_t)(end - h));
+                    if (!le) le = end;
+                    size_t lno = line_base + nl_before_ls;  /* incremental count */
+                    while (nlscan < ls) {
+                        const unsigned char *nx = memchr(nlscan, '\n', (size_t)(ls - nlscan));
+                        if (!nx) break; nl_before_ls++; nlscan = nx + 1;
+                    }
+                    pc.ls = ls; pc.llen = (size_t)(le - ls); pc.line_no = lno + 1;
+                    wubre_search_buf(g_re, ls, (size_t)(le - ls), on_line_match, &pc);
+                    skip_until = le;
+                    p = le < end ? le + 1 : end; rem = (size_t)(end - p);
+                }
+                if (res->matched) g_found_any = 1;
+                return;
+            }
+        }
+    }
+
     /* SOTA-2: pure literal alternation fast path. For patterns like
      * 'foo|bar|baz' where every alternative is a single plain literal,
      * skip the NFA/DFA entirely and use per-literal memmem scans with

@@ -99,3 +99,36 @@ SIMD search (not per-literal memmem), tracked as the next redesign item.
 - Pure-alters line-number computation (binary search over line index)
 - min-literal-length guard to prevent short literals from using the
   memmem path (which is slower than DFA for dense matches)
+
+
+## SOTA-3 results (2026-08-22, pinned-literal engine + \s newline fix)
+
+| benchmark | before | after | improvement |
+|---|---:|---:|---|
+| surround_words `\w+\s+Holmes\s+\w+` | 398 ms | **145 ms** | 2.7× (beats grep 3×) |
+| literal_word `\bSherlock\b` | 1662 ms | **152 ms** | 11× |
+| literal `Sherlock Holmes` | 161 ms | **143 ms** | 1.1× |
+
+### Correctness fix included:
+- `\s` no longer includes `\n`: GNU grep is line-oriented so `\s` can never
+  see a newline. Including it let whole-buffer matches span lines
+  (`\w+\s+Holmes` matched a "Holmes" on the NEXT line → 233 vs grep's 230).
+  After the fix: 230 = exact parity.
+
+### Implementation notes:
+- Pinned-literal engine: memmem the rarest required literal → candidate
+  lines only → per-line NFA. Incremental newline counter (the naive
+  rescan-from-start was O(hits × filesize) quadratic).
+- Density cap falls back to whole-buffer NFA for common literals.
+
+## Current honest position (subtitles 500MB, best-of-3)
+
+| benchmark | WuBuGrep | grep | rg | ugrep |
+|---|---:|---:|---:|---:|
+| literal | 143 ms | 329 | **88** | 79 |
+| word-boundary literal | 152 ms | 320 | **86** | 81 |
+| alternates (5 lits) | 218 ms | 669 | **102** | 101 |
+| surround_words | 145 ms | 433 | **92** | 109 |
+| class `[a-z]+` | **2147** | 7329 | 3869 | 3111 |
+| `[A-Z]` | **1601** | 6352 | 3782 | 2643 |
+| `[0-9]` | **169** | 562 | 185 | 198 |

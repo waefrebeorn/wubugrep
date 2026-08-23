@@ -258,7 +258,11 @@ static Frag parse_atom(P *ps){ /* identical to current engine */
         for (int c=0;c<256;c++){
             int in=0;
             unsigned char ch2=(unsigned char)c;
-            if ((kind=='s'||kind=='S')) in = (ch2==' '||ch2=='\t'||ch2=='\n'||ch2=='\r'||ch2=='\f'||ch2=='\v');
+            if ((kind=='s'||kind=='S')) in = (ch2==' '||ch2=='\t'||ch2=='\r'||ch2=='\f'||ch2=='\v');
+            /* NOTE: \n deliberately EXCLUDED from \s: GNU grep is line-oriented,
+             * so \s can never see a newline in practice. Including it let
+             * whole-buffer matches span lines (e.g. \w+\s+Holmes matched a
+             * 'Holmes' on the NEXT line), diverging from grep by 3 lines. */
             else if ((kind=='d'||kind=='D')) in = (ch2>='0'&&ch2<='9');
             else in = isalnum(ch2) || ch2=='_';
             if (in) bits[c>>3]|=(1u<<(c&7));
