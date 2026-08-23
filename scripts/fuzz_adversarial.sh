@@ -1,11 +1,12 @@
 #!/bin/bash
 # Adversarial fuzz: malformed + rare-literal patterns vs GNU grep, 3 corpora
-cd /home/wubu/wubuos/src/tools
+cd "$(dirname "$0")/.."
+WUB="${WUB:-$PWD/wubugrep}"
 fails=0; total=0
 for corpus in /tmp/craft.txt /tmp/craft2.txt /tmp/craft3.txt /tmp/c3.txt; do
   while read -r pat; do
     total=$((total+1))
-    a=$(./wubugrep -nE "$pat" "$corpus" 2>/dev/null; echo rc$?)
+    a=$("$WUB" -nE "$pat" "$corpus" 2>/dev/null; echo rc$?)
     b=$(grep -nE "$pat" "$corpus" 2>/dev/null; echo rc$?)
     if [ "$a" != "$b" ]; then fails=$((fails+1)); echo "FUZZ FAIL [$pat] on $corpus"; fi
   done <<'PATS'

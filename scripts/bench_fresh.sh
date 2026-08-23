@@ -1,8 +1,8 @@
 #!/bin/bash
 # Fresh full 4-way bench, per-invocation date timing, warm cache, min of 3.
-cd /home/wubu/wubuos/src/tools
-C=/tmp/c3.txt
-W=./wubugrep
+cd "$(dirname "$0")/.."
+C=${WUBUGREP_CORPUS:-/tmp/c3.txt}
+W="${WUB:-$PWD/wubugrep}"
 time_one() {  # $1=binary $2..=args ; echoes ms
     local t0 t1
     t0=$(date +%s.%N); "$@" $C > /dev/null 2>&1; t1=$(date +%s.%N)
