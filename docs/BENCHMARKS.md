@@ -132,3 +132,18 @@ SIMD search (not per-literal memmem), tracked as the next redesign item.
 | class `[a-z]+` | **2147** | 7329 | 3869 | 3111 |
 | `[A-Z]` | **1601** | 6352 | 3782 | 2643 |
 | `[0-9]` | **169** | 562 | 185 | 198 |
+
+
+## SOTA-4 results (2026-08-22, one-pass Teddy search for alternations)
+
+| benchmark | before | after | improvement |
+|---|---:|---:|---|
+| alternates (5 literals) | 218 ms | **141 ms** | 1.5× (was 3690 — **26× total**); beats grep 4.7× |
+
+The N separate memmem scans (N × 500 MB of reads) are replaced by a single
+Teddy PSHUFB sweep that finds ALL literal occurrences in one pass, with
+positions arriving pre-sorted. Correctness hardening included:
+- thread-safe collector (per-call state; the static version raced across
+  the 16 chunk workers → heap corruption)
+- match_count now counts unique LINES, not raw positions (grep -c parity)
+- teddy -1 (unsupported: tiny buffer) falls through to the NFA path

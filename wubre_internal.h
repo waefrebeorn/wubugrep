@@ -180,6 +180,11 @@ const unsigned char *wubre_litpref_rarest(const WURegex *re, int *len, int mode)
 int wub_simd_teddy_present(const unsigned char *buf, size_t n,
                           const unsigned char *const *lits,
                           const int *lens, int nlits);
+typedef void (*wub_teddy_cb)(void *ctx, size_t pos);
+long wub_simd_teddy_search(const unsigned char *buf, size_t n,
+                          const unsigned char *const *lits,
+                          const int *lens, int nlits,
+                          wub_teddy_cb cb, void *ctx);
 int wub_simd_any_literal_present(const unsigned char *buf, size_t n,
                                  const unsigned char *const *lits,
                                  const int *lens, int nlits, int maxlen);

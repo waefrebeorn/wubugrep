@@ -331,6 +331,18 @@ static void on_line_match(long line, void *ctx) {
     g_found_any = 1;
 }
 
+/* collector for the one-pass Teddy multi-literal search (thread-safe:
+ * all state lives in the ctx struct, one per scan_range call) */
+typedef struct { size_t *v; size_t cap, n; } ml_collector;
+static void ml_collect_cb(void *ctx, size_t pos) {
+    ml_collector *c = (ml_collector*)ctx;
+    if (c->n >= c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 4096;
+        c->v = realloc(c->v, c->cap * sizeof(size_t));
+    }
+    c->v[c->n++] = pos;
+}
+
 static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
                        size_t line_base, range_res_t *res, const char *fname) {
     const unsigned char *end = base + size;
@@ -464,35 +476,25 @@ static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
                 /* too short: fall through to NFA/DFA path */
                 goto ml_done_skip;
             }
-            /* collect all match positions from all literals */
-            size_t cap = 4096, npos = 0;
-            size_t *positions = malloc(cap * sizeof(size_t));
-            for (int k = 0; k < ml_n; k++) {
-                const unsigned char *p = base;
-                size_t remain = size;
-                while (remain >= (size_t)ml_lens[k]) {
-                    const unsigned char *hit = memmem(p, remain, ml_lits[k], (size_t)ml_lens[k]);
-                    if (!hit) break;
-                    if (npos >= cap) { cap *= 2; positions = realloc(positions, cap * sizeof(size_t)); }
-                    positions[npos++] = (size_t)(hit - base);
-                    p = hit + 1;
-                    remain = (size_t)(end - p);
-                }
+            /* SOTA-4: ONE Teddy pass finds ALL literal occurrences —
+             * replaces N separate memmem scans (N x filesize bytes read)
+             * with a single sweep. Positions arrive in increasing order,
+             * so no sort is needed at all. */
+            ml_collector col = { NULL, 0, 0 };
+            long tfound = wub_simd_teddy_search(base, size, ml_lits, ml_lens,
+                                                ml_n, ml_collect_cb, &col);
+            if (tfound < 0) {
+                /* unsupported (tiny buffer / bad lens): NFA path */
+                free(col.v);
+                goto ml_done_skip;
             }
-            /* sort + unique */
-            for (size_t a = 1; a < npos; a++) {
-                size_t key = positions[a]; size_t b = a;
-                while (b > 0 && positions[b-1] > key) { positions[b] = positions[b-1]; b--; }
-                positions[b] = key;
-            }
-            size_t uniq = 0;
-            for (size_t a = 0; a < npos; a++) {
-                if (uniq == 0 || positions[a] != positions[uniq-1])
-                    positions[uniq++] = positions[a];
-            }
+            size_t npos = col.n;
+            size_t uniq = npos;   /* teddy reports strictly increasing */
+            size_t *positions = col.v ? col.v : malloc(1);  /* non-NULL for free() */
             res->matched = uniq > 0; res->match_count = uniq;
-            /* emit lines: dedup per LINE and use real line numbers */
-            if (uniq && !g_opt_count && !g_opt_files_no && !g_opt_quiet) {
+
+/* emit lines: dedup per LINE and use real line numbers */
+            if (uniq && !g_opt_files_no && !g_opt_quiet) {
                 size_t cap2 = 1024; size_t *lo = malloc(cap2 * sizeof(size_t)); size_t nlines = 0;
                 const unsigned char *lp2 = base;
                 while (lp2 <= end) {
@@ -503,19 +505,21 @@ static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
                     lp2 = nl + 1;
                 }
                 long last_emitted = -1;
+                size_t nuniq_lines = 0;
                 for (size_t a = 0; a < uniq; a++) {
                     /* binary search for the line containing positions[a] */
                     size_t lo_i = 0, hi_i = nlines;
                     while (lo_i < hi_i) { size_t mid = (lo_i+hi_i)/2; if (lo[mid] <= positions[a]) lo_i = mid+1; else hi_i = mid; }
                     long ln = (long)lo_i - 1; if (ln < 0) ln = 0;
                     if (ln == last_emitted) continue;
-                    last_emitted = ln;
+                    last_emitted = ln; nuniq_lines++;
                     const unsigned char *ls = base + lo[ln];
                     const unsigned char *ne = memchr(ls, '\n', (size_t)(end - ls));
                     const unsigned char *le = ne ? ne : end;
                     emit_line(out, fname, line_base + (size_t)ln + 1, ls, (size_t)(le - ls));
                 }
                 free(lo);
+                res->match_count = nuniq_lines;  /* unique LINES, not positions */
             } else if (uniq) {
                 res->matched = 1; g_found_any = 1;
             }
