@@ -58,7 +58,7 @@ rg on literals, ahead of rg on class-heavy matching and uppercase-reject.
 cc -O3 -flto -march=native -std=c11 -I. -o wubugrep wubugrep.c wubre.c \
     wubre_compile.c wubre_match.c wubre_simd.c wubre_bre.c wubre_dfa.c wubre_litpref.c
 # or a self-tuning PGO build:
-sh tools/build_wubugrep.sh
+sh scripts/build_wubugrep.sh
 ```
 
 `make wubugrep_static` produces a fully static binary; `make tools` builds it
@@ -93,9 +93,8 @@ error (exit 2) — both matching GNU grep.
   chunk-boundary check.
 - `wubre_test.c` unit suite: ALL PASS. **ASan + UBSan clean** across engine
   patterns including the fused/rarest paths.
-- Known divergence (tracked, pre-existing): GNU grep's malformed-pattern
-  leniency in corner cases (unbalanced `)`, leading `*`, empty-alt `|`) is not
-  fully replicated. See WUBUGREP_SOTA.md §6.
+- Malformed-pattern leniency: **FIXED** — 100% on `ere.tests` (217/217),
+  `bre.tests` (64/64), and the adversarial sweep (see Known gaps below).
 
 ## Benchmarks
 

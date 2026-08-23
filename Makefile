@@ -15,8 +15,8 @@ portable:
 static: wubugrep.c $(ENGINE)
 	$(CC) $(CFLAGS) -static -I. -o wubugrep_static wubugrep.c $(ENGINE)
 
-wubre_test: wubre_test.c wubre.c $(ENGINE)
-	$(CC) -O2 -std=c11 -I. -o $@ wubre_test.c wubre.c $(ENGINE)
+wubre_test: wubre_test.c $(ENGINE)
+	$(CC) -O2 -std=c11 -I. -o $@ wubre_test.c $(ENGINE)
 	./wubre_test
 
 test: wubre_test
