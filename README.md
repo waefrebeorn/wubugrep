@@ -165,6 +165,16 @@ tool; the craft is in what you refuse to accept from it.
 
 If you're here to argue — good. Open an issue. Bring benchmarks.
 
+## To be continued
+
+The roadmap is public: **[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)** lists
+100 concrete improvements — every admitted gap, every tracked redesign, every
+feature the leaders have that we don't, informed by studying ripgrep, ugrep,
+GNU grep, and the Hyperscan/Teddy/Harry literature. Items get checked off only
+with a committed test and a measurement. This project is a tool *and* an
+argument; the argument continues until the list is empty or the tools are
+superseded.
+
 ---
 
 ## Build
