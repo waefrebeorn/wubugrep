@@ -47,7 +47,7 @@ bool wubre_search(const WURegex *re_, const unsigned char *buf, size_t n){
     int gen=1;
     int at_start0 = 1;
     int at_end0   = (n==0) || (buf[0]=='\n');
-    int wprev0 = (n==0) ? 0 : is_word(buf[0]);
+    int wprev0 = 0;  /* pos 0 has NO previous char (was is_word(buf[0]) - broke \b at line start) */
     int wcur0  = (n==0) ? 0 : is_word(buf[0]);
 #define SADD(s) do{ if(seen[s]!=gen){ seen[s]=gen; dense[ndense++]=s; } }while(0)
     int ndense=0;
@@ -208,7 +208,7 @@ bool wubre_search_buf(const WURegex *re_, const unsigned char *buf, size_t n,
     int gen=1;
     int at_start0 = 1;
     int at_end0   = (n==0) || (buf[0]=='\n');
-    int wprev0 = (n==0) ? 0 : is_word(buf[0]);
+    int wprev0 = 0;  /* pos 0 has NO previous char (was is_word(buf[0]) - broke \b at line start) */
     int wcur0  = (n==0) ? 0 : is_word(buf[0]);
 #define SADD(s) do{ if(seen[s]!=gen){ seen[s]=gen; dense[ndense++]=s; } }while(0)
     int ndense=0;

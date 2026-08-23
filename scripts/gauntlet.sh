@@ -24,6 +24,10 @@ for pat in 'the' 'error' '[a-z]+' 'a+' '[0-9a-f]+' '[A-Z]' 'a.*b' 'foo|bar' 'a{2
   a=$("$WUB" -nE "$pat" $C | md5sum); b=$(grep -nE "$pat" $C | md5sum)
   [ "$a" = "$b" ] || { echo "ERE -n FAIL [$pat]"; fail=1; }
 done
+for pat in '\\bcat\\b' '\\bSherlock\\b' '\\w+\\s+Holmes'; do
+  a=$("$WUB" -nE "$pat" $C | md5sum); b=$(grep -nE "$pat" $C | md5sum)
+  [ "$a" = "$b" ] || { echo "WB FAIL: $pat"; fail=1; }
+done
 echo "ERE sweep done (fail=$fail)"
 for pat in the error THE Error; do
   a=$("$WUB" -nE -i "$pat" $C | md5sum); b=$(grep -niE "$pat" $C | md5sum)

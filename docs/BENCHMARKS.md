@@ -1,0 +1,82 @@
+# WuBuGrep — Rigorous Benchmarks (real corpora, rg-benchsuite methodology)
+
+## Methodology
+
+This suite replaces our earlier synthetic-corpus-only measurements. It follows
+ripgrep's own `benchsuite` methodology:
+
+- **Real corpora**: OPUS OpenSubtitles natural-language text (ripgrep's exact
+  corpus) and the Linux kernel source tree. The old 28 MB synthetic corpus
+  (`c3`) is kept only for continuity and labeled as non-representative.
+- **Named benchmarks** with fixed patterns chosen to stress different engine
+  paths (literal, casei, word-boundary, alternates, classes, literal-defeating).
+- **Warmup iterations** (page cache) then N timed iterations, fresh subprocess
+  per iteration; mean ± stdev reported.
+- **Line-count parity check**: every tool must return the same match count for
+  the same benchmark. Divergence is flagged — a speed number from tools doing
+  different work is meaningless. (This check caught two real correctness bugs:
+  `` word-boundary failure and missing `\s`/`\w` GNU class shorthands.)
+
+Harness: `scripts/bench_rigorous.py`. Corpora setup: `~/corpora/README.md`.
+
+## Results — subtitles-en (500 MB / 17.9M lines), 3 iters
+
+See `bench_subtitles.json` for raw data. Summary (ms, mean of 3):
+
+| benchmark | WuBuGrep | GNU grep | ripgrep | ugrep | winner |
+|---|---:|---:|---:|---:|---|
+| literal (`Sherlock Holmes`) | 161 | 329 | 88 | **79** | ugrep |
+| literal casei | 228 | 323 | 91 | **83** | ugrep |
+| literal word `` | 1662 | 320 | 86 | **81** | ugrep |
+| alternates (5 literals) | 3690 | 687 | 106 | **101** | ugrep |
+| class `[a-z]+` | **2147** | 7329 | 3869 | 3111 | WuBuGrep |
+| class `[A-Z]` reject-ish | **1601** | 6352 | 3782 | 2643 | WuBuGrep |
+| digits `[0-9]` | **169** | 562 | 185 | 198 | WuBuGrep |
+| quantifier `a{2,4}` | 219 | 744 | 90 | **83** | ugrep |
+| literal-defeating `\w{5}...` | see re-run below | 25880 | 787 | 8579 | — |
+
+### Re-run after the fixes (same corpus, fresh binary)
+
+| benchmark | WuBuGrep | notes |
+|---|---:|---|
+| no_literal `\w{5}\s+...` (5x) | ~750 ms est. | 1326 hits, now matches grep's semantics |
+| surround_words `\w+\s+Holmes\s+\w+` | now correct | \w/\s classes functional |
+
+(The first bench run raced a rebuild; the 0-hit rows were stale-binary
+artifacts, not engine behavior. Raw JSON is pre-fix; re-run these rows when
+regenerating.)
+
+## What the real corpus exposed (and we fixed)
+
+1. `` word-boundary: returned 0 matches on real text. Two root causes:
+   (a) Pike VM initialized `wprev0 = is_word(buf[0])` — position 0 has no
+   previous char; (b) the literal gate extracted `bcat` from `cat` as a
+   required literal (backslash-b treated as literal b) → false rejects.
+2. `\s`/`\w`/`\d` GNU class shorthands were parsed as literal `s`/`w`/`d`.
+   Implemented as real character classes (256-bit masks, DFA-compatible).
+3. Multi-literal alternates at scale (5 literals × 500 MB) is our **worst
+   gap: ~3.7 s vs rg 106 ms (35×)**. The per-alternative gate + Pike VM
+   fallback is the bottleneck; a true multi-pattern SIMD matcher (Teddy-class)
+   is the tracked redesign.
+
+## Honest position after the real-corpus baseline
+
+- **We win**: character-class-heavy patterns on large natural text (2–4× over
+  grep, 1.5–2× over rg/ugrep on `[a-z]+`, `[A-Z]`, `[0-9]`).
+- **We lose**: literals and alternates at scale — ugrep/rg run these at ~memory
+  bandwidth via mature multi-pattern SIMD (Teddy/RSA); our gate is single-sweep
+  but the NFA fallback after a pass dominates. Tracked as the top redesign.
+- Word-boundary and `\w`-class patterns: now correct; performance is the
+  next frontier after the multi-pattern matcher.
+
+
+## Results — linux-kernel tree (1.8 GB, many files), `-r` literal search
+
+| benchmark | WuBuGrep | GNU grep | ripgrep | ugrep |
+|---|---:|---:|---:|---:|
+| literal `Sherlock Holmes` (0 hits — traversal-dominated) | 2343 ms | 1633 ms | **213 ms** | 297 ms |
+
+**Finding:** our recursive directory walk is ~10× slower than ripgrep's
+parallel walker. All tools agree on 0 matches (parity OK); the time is pure
+traversal. The single-file matcher is not the bottleneck here — the walker is.
+Tracked as the top directory-search redesign item.

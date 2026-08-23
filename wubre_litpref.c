@@ -90,7 +90,21 @@ static LitPref parse_seq(const char **pp, const char *end, int depth){
 
     while (p < end){
         char c = *p;
-        if (c == '\\' && p+1 < end){ if (runn<LP_LMAX) run[runn++]=(unsigned char)p[1]; p+=2; continue; }
+        if (c == '\\' && p+1 < end){
+            /* GNU semantics: \b \B \A \Z \d \D \s \S \w \W are ANCHORS or
+             * CLASSES — they contribute no required literal (a class can
+             * match many bytes; an anchor matches nothing). Escaped
+             * METACHARACTERS (\. \* \\ etc.) contribute their literal char.
+             * The old code took p[1] blindly: "\bcat\b" required the
+             * literal "bcat" which never occurs => gate false-rejected. */
+            char n = p[1];
+            if (strchr("bBAZdDsSwW", n)){   /* anchor/class: no literal */
+                if (runn) dnf_and_lit(&cur, run, runn);
+                runn = 0; p += 2; continue;
+            }
+            if (runn<LP_LMAX) run[runn++]=(unsigned char)n;
+            p+=2; continue;
+        }
         if (c == '|'){
             if (runn) dnf_and_lit(&cur, run, runn);   /* flush pending run */
             runn = 0;

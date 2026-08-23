@@ -248,6 +248,28 @@ static Frag parse_atom(P *ps){ /* identical to current engine */
         Frag f={.start=(int)(s-ps->cx->re->st),.out=dangle_one(ps->cx,(int)(s-ps->cx->re->st),0)}; f.src=s0; f.src_end=ps->p; return f; }
     if (ch=='.'){ ps->p++; State *s=add_state(ps->cx->re,CHR); s->cl=1;
         Frag f={.start=(int)(s-ps->cx->re->st),.out=dangle_one(ps->cx,(int)(s-ps->cx->re->st),0)}; f.src=s0; f.src_end=ps->p; return f; }
+    /* GNU ERE class shorthands: \s \S \w \W \d \D — character classes.
+     * Implemented as explicit 256-bit class masks (same representation as
+     * parse_class), so the DFA/Pike VM handle them with zero new machinery. */
+    if (ch=='\\' && ps->p+1<ps->end && strchr("sSdDwW", ps->p[1])){
+        char kind = ps->p[1];
+        int neg = (kind >= 'A' && kind <= 'Z');   /* S/D/W are negated */
+        unsigned char *bits = calloc(32,1);
+        for (int c=0;c<256;c++){
+            int in=0;
+            unsigned char ch2=(unsigned char)c;
+            if ((kind=='s'||kind=='S')) in = (ch2==' '||ch2=='\t'||ch2=='\n'||ch2=='\r'||ch2=='\f'||ch2=='\v');
+            else if ((kind=='d'||kind=='D')) in = (ch2>='0'&&ch2<='9');
+            else in = isalnum(ch2) || ch2=='_';
+            if (in) bits[c>>3]|=(1u<<(c&7));
+        }
+        ps->p+=2;
+        State *s=add_state(ps->cx->re,CHR);
+        s->cl=2; s->bits=bits; s->neg=neg?1:0;
+        Frag f={.start=(int)(s-ps->cx->re->st),.out=dangle_one(ps->cx,(int)(s-ps->cx->re->st),0)};
+        f.src=s0; f.src_end=ps->p;
+        return f;
+    }
     if (ch=='\\' && ps->p+1<ps->end && (ps->p[1]=='b' || ps->p[1]=='B')){
         Stype t = (ps->p[1]=='b') ? ANCH_WB : ANCH_NOTWB; ps->p+=2;
         State *s=add_state(ps->cx->re,t);
