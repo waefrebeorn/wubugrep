@@ -354,6 +354,87 @@ int wub_simd_any_literal_present(const unsigned char *buf, size_t n,
     }
 }
 
+/* ---- 5b. Teddy slim-N2 multi-literal presence gate ----
+ * PSHUFB nibble-LUT over first-2-byte fingerprints of up to 8 literals.
+ * AVX2, 32 bytes/chunk, one op pair covers ALL literals per chunk.
+ * Candidates verified scalar (full literal); none surviving => absent.
+ * Returns 1 present, 0 absent, -1 unsupported (caller falls back). */
+__attribute__((target("avx2,popcnt,bmi,bmi2"), force_align_arg_pointer))
+int wub_simd_teddy_present(const unsigned char *buf, size_t n,
+                           const unsigned char *const *lits,
+                           const int *lens, int nlits){
+    if (nlits <= 0 || nlits > 8) return -1;
+    int minlen = 999;
+    for (int k=0;k<nlits;k++){
+        if (lens[k] < 2 || lens[k] > 32) return -1;
+        if (lens[k] < minlen) minlen = lens[k];
+    }
+    if (n < (size_t)(minlen + 31)) return -1;
+
+    unsigned char a0lo[16], a0hi[16], a1lo[16], a1hi[16];
+    memset(a0lo,0,16); memset(a0hi,0,16); memset(a1lo,0,16); memset(a1hi,0,16);
+    for (int k=0;k<nlits;k++){
+        unsigned char b0 = lits[k][0], b1 = lits[k][1];
+        a0lo[b0 & 0x0f] |= (unsigned char)(1u<<k);
+        a0hi[b0 >> 4]   |= (unsigned char)(1u<<k);
+        a1lo[b1 & 0x0f] |= (unsigned char)(1u<<k);
+        a1hi[b1 >> 4]   |= (unsigned char)(1u<<k);
+    }
+    __m256i A0lo = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)a0lo));
+    __m256i A0hi = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)a0hi));
+    __m256i A1lo = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)a1lo));
+    __m256i A1hi = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)a1hi));
+    const __m256i m0f = _mm256_set1_epi8((char)0x0f);
+
+    size_t pos = 0;
+    while (pos + 33 <= n){
+        const unsigned char *p = buf + pos;
+        __m256i blk  = _mm256_loadu_si256((const __m256i*)p);
+        __m256i blk1 = _mm256_loadu_si256((const __m256i*)(p+1));
+        __m256i lo   = _mm256_and_si256(blk,  m0f);
+        __m256i hi   = _mm256_and_si256(_mm256_srli_epi16(blk,4), m0f);
+        __m256i lo1  = _mm256_and_si256(blk1, m0f);
+        __m256i hi1  = _mm256_and_si256(_mm256_srli_epi16(blk1,4), m0f);
+        __m256i cand = _mm256_and_si256(
+            _mm256_and_si256(_mm256_shuffle_epi8(A0lo, lo),
+                             _mm256_shuffle_epi8(A0hi, hi)),
+            _mm256_and_si256(_mm256_shuffle_epi8(A1lo, lo1),
+                             _mm256_shuffle_epi8(A1hi, hi1)));
+                unsigned mv;
+        {
+            /* bucket masks can have bit 7 set (128 = literal 8's bit), so
+             * cmpgt_epi8 (signed) fails. Use ~cmpeq(cand,0) instead: any
+             * nonzero byte gets 0xFF regardless of value. */
+            __m256i nz = _mm256_cmpeq_epi8(cand, _mm256_setzero_si256());
+            nz = _mm256_xor_si256(nz, _mm256_set1_epi8((char)-1));
+            mv = (unsigned)_mm256_movemask_epi8(nz);
+        } while (mv){
+            int bit = __builtin_ctz(mv);
+            size_t bpos = pos + (size_t)bit;
+            for (int k=0;k<nlits;k++){
+                if (buf[bpos]!=lits[k][0] || buf[bpos+1]!=lits[k][1]) continue;
+                if (bpos+(size_t)lens[k] > n) continue;
+                int ok=1;
+                for (int t=2;t<lens[k];t++) if(buf[bpos+t]!=lits[k][t]){ok=0;break;}
+                if (ok) return 1;
+            }
+            mv &= mv-1;
+        }
+        pos += 32;
+    }
+    /* scalar tail: check remaining positions with full literals */
+    for (size_t j = pos; j < n; j++){
+        for (int k=0;k<nlits;k++){
+            if ((size_t)lens[k] > n-j) continue;
+            if (buf[j]!=lits[k][0]) continue;
+            int ok=1;
+            for (int t=1;t<lens[k];t++) if(buf[j+t]!=lits[k][t]){ok=0;break;}
+            if(ok) return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- 6. SIMD newline + NUL scan (RE/flex/ugrep technique, native C11) ----
  * One pass over the buffer counts '\n' and detects any NUL byte, processing
  * 128 bytes at a time (four 32-byte AVX2 loads). This is the ugrep/RE-flex

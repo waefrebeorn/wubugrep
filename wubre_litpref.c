@@ -255,6 +255,20 @@ int wubre_litpref_gate(const WURegex *re, const unsigned char *buf, size_t n){
             if (lp->alts[i].lits[j].len > maxlen) maxlen = lp->alts[i].lits[j].len;
             total++;
         }
+        if (total > 0 && total <= 8 && maxlen >= 2 && maxlen <= 32){
+            /* SOTA path: Teddy slim-N2 for <=8 literals of len>=2 */
+            const unsigned char *lits[8]; int lens[8]; int idx=0;
+            for (int i=0;i<lp->n;i++) for (int j=0;j<lp->alts[i].n;j++){
+                if (lp->alts[i].lits[j].len < 2) { idx = -1; break; }
+                if (idx>=0){ lits[idx] = lp->alts[i].lits[j].s; lens[idx] = lp->alts[i].lits[j].len; idx++; }
+            }
+            if (idx > 0){
+                int r = wub_simd_teddy_present(buf, n, lits, lens, idx);
+                if (r == 1) return 1;
+                if (r == 0) return 0;
+                /* -1 unsupported -> generic below */
+            }
+        }
         if (total > 0 && total <= 16 && maxlen <= 16){
             const unsigned char *lits[16]; int lens[16]; int idx=0;
             for (int i=0;i<lp->n;i++) for (int j=0;j<lp->alts[i].n;j++){
@@ -371,4 +385,24 @@ const unsigned char *wubre_litpref_rarest(const WURegex *re, int *len, int mode)
     if (!best || best->len <= 0) return NULL;
     *len = best->len;
     return best->s;
+}
+
+
+/* Returns non-zero iff the pattern is a PURE alternation of single-literal
+ * alternatives (e.g. 'foo|bar|baz') — every alt has exactly 1 literal, no
+ * quantifiers, no metacharacters. On success, fills lits[]/lens[] with up to
+ * max literals and returns the count. Returns 0 if not a pure alternation.
+ * Used by the multi-literal fast path that skips the NFA entirely. */
+int wubre_litpref_pure_alters(const WURegex *re,
+                              const unsigned char *lits[], int lens[], int max){
+    LitPref *lp = (LitPref*)re->litpref;
+    if (!lp || lp->n < 2 || lp->n > max) return 0;
+    if (re->flags & WUBRE_ICASE) return 0;
+    for (int i=0;i<lp->n;i++){
+        if (lp->alts[i].n != 1) return 0;   /* every alt must be exactly 1 lit */
+        if (lp->alts[i].lits[0].len <= 0) return 0;
+        lits[i] = lp->alts[i].lits[0].s;
+        lens[i] = lp->alts[i].lits[0].len;
+    }
+    return lp->n;
 }

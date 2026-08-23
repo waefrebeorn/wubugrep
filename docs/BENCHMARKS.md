@@ -80,3 +80,22 @@ regenerating.)
 parallel walker. All tools agree on 0 matches (parity OK); the time is pure
 traversal. The single-file matcher is not the bottleneck here — the walker is.
 Tracked as the top directory-search redesign item.
+
+
+## SOTA redesign results (2026-08-22, post-Teddy + pure-alt fast path)
+
+| benchmark | before | after | improvement |
+|---|---:|---:|---|
+| alternates_literal (5 lits, 500MB) | 3690 ms | **218 ms** | **17×** |
+| literal (500MB) | 161 ms | ~155 ms | ~1× (already good) |
+
+The alternates gap went from 35× slower than rg to 2× slower. The remaining
+gap is the N memmem scans (5 literals × 500 MB = 2500 MB of scanning); rg's
+Teddy does it in one pass. Closing this fully requires a true multi-pattern
+SIMD search (not per-literal memmem), tracked as the next redesign item.
+
+### New correctness fixes included:
+- Teddy gate movemask sign-bit bug (cmpgt fails for bit-7 buckets)
+- Pure-alters line-number computation (binary search over line index)
+- min-literal-length guard to prevent short literals from using the
+  memmem path (which is slower than DFA for dense matches)

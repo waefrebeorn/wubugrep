@@ -381,6 +381,83 @@ static void scan_range(const unsigned char *base, size_t size, obuf_t *out,
      * for the common case (no -v); -v keeps the per-line fallback below.
      * The literal prefilter gate is checked ONCE in process_mmap; a reject
      * returns before any chunk is spawned, so it is never re-tested here. */
+    /* SOTA-2: pure literal alternation fast path. For patterns like
+     * 'foo|bar|baz' where every alternative is a single plain literal,
+     * skip the NFA/DFA entirely and use per-literal memmem scans with
+     * position deduplication — matching rg's Pre<P> strategy. */
+    if (g_opt_regex && !g_opt_invert && !g_opt_invert) {
+        const unsigned char *ml_lits[32]; int ml_lens[32];
+        int ml_n = wubre_litpref_pure_alters(g_re, ml_lits, ml_lens, 32);
+        if (ml_n >= 2) {
+            /* only use fast path when literals are discriminating enough */
+            int min_ml_len = 999;
+            for (int k = 0; k < ml_n; k++) if (ml_lens[k] < min_ml_len) min_ml_len = ml_lens[k];
+            if (min_ml_len < 2) {
+                /* too short: fall through to NFA/DFA path */
+                goto ml_done_skip;
+            }
+            /* collect all match positions from all literals */
+            size_t cap = 4096, npos = 0;
+            size_t *positions = malloc(cap * sizeof(size_t));
+            for (int k = 0; k < ml_n; k++) {
+                const unsigned char *p = base;
+                size_t remain = size;
+                while (remain >= (size_t)ml_lens[k]) {
+                    const unsigned char *hit = memmem(p, remain, ml_lits[k], (size_t)ml_lens[k]);
+                    if (!hit) break;
+                    if (npos >= cap) { cap *= 2; positions = realloc(positions, cap * sizeof(size_t)); }
+                    positions[npos++] = (size_t)(hit - base);
+                    p = hit + 1;
+                    remain = (size_t)(end - p);
+                }
+            }
+            /* sort + unique */
+            for (size_t a = 1; a < npos; a++) {
+                size_t key = positions[a]; size_t b = a;
+                while (b > 0 && positions[b-1] > key) { positions[b] = positions[b-1]; b--; }
+                positions[b] = key;
+            }
+            size_t uniq = 0;
+            for (size_t a = 0; a < npos; a++) {
+                if (uniq == 0 || positions[a] != positions[uniq-1])
+                    positions[uniq++] = positions[a];
+            }
+            res->matched = uniq > 0; res->match_count = uniq;
+            /* emit lines: dedup per LINE and use real line numbers */
+            if (uniq && !g_opt_count && !g_opt_files_no && !g_opt_quiet) {
+                size_t cap2 = 1024; size_t *lo = malloc(cap2 * sizeof(size_t)); size_t nlines = 0;
+                const unsigned char *lp2 = base;
+                while (lp2 <= end) {
+                    if (nlines >= cap2) { cap2 *= 2; lo = realloc(lo, cap2 * sizeof(size_t)); }
+                    lo[nlines++] = (size_t)(lp2 - base);
+                    const unsigned char *nl = memchr(lp2, '\n', (size_t)(end - lp2));
+                    if (!nl) break;
+                    lp2 = nl + 1;
+                }
+                long last_emitted = -1;
+                for (size_t a = 0; a < uniq; a++) {
+                    /* binary search for the line containing positions[a] */
+                    size_t lo_i = 0, hi_i = nlines;
+                    while (lo_i < hi_i) { size_t mid = (lo_i+hi_i)/2; if (lo[mid] <= positions[a]) lo_i = mid+1; else hi_i = mid; }
+                    long ln = (long)lo_i - 1; if (ln < 0) ln = 0;
+                    if (ln == last_emitted) continue;
+                    last_emitted = ln;
+                    const unsigned char *ls = base + lo[ln];
+                    const unsigned char *ne = memchr(ls, '\n', (size_t)(end - ls));
+                    const unsigned char *le = ne ? ne : end;
+                    emit_line(out, fname, line_base + (size_t)ln + 1, ls, (size_t)(le - ls));
+                }
+                free(lo);
+            } else if (uniq) {
+                res->matched = 1; g_found_any = 1;
+            }
+            free(positions);
+            if (res->matched) g_found_any = 1;
+            return;
+        }
+    }
+
+ml_done_skip:
     if (g_opt_regex && !g_opt_invert) {
         rcb_t rc = { base, end, line_base, out, res, fname, NULL, 0, 0 };
         /* Line index is built LAZILY inside on_regex_match on the first
