@@ -147,3 +147,22 @@ positions arriving pre-sorted. Correctness hardening included:
   the 16 chunk workers → heap corruption)
 - match_count now counts unique LINES, not raw positions (grep -c parity)
 - teddy -1 (unsupported: tiny buffer) falls through to the NFA path
+
+
+## SOTA-5 results (2026-08-22, parallel batched directory walker)
+
+Recursive `-r` walker redesigned from serial DFS to enumerate → parallel
+batch processing → ordered flush (byte-identical output to GNU order).
+Thread spawn amortized with large batches; per-job buffers freed after
+ordered emission (leak fix).
+
+| -r tree walk (linux-kernel, no-match worst case) | before | after |
+|---|---:|---:|
+| WuBuGrep | 3290 ms | **2302 ms** |
+
+**Honest assessment:** still behind grep (1181 ms) and rg (206 ms). The
+remaining gap is syscall-bound: `/usr/bin/time` shows 0.97 s SYSTEM time
+(open/fstat/read/close/mmap per file × ~80K files) on the WSL2 9P
+filesystem — kernel-side cost that userspace parallelism cannot remove.
+On native Linux the same code should land near grep parity. Next lever if
+needed: io_uring or statx batching; also gitignore-aware skipping like rg.

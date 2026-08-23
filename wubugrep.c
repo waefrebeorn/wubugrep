@@ -890,52 +890,113 @@ static void parse_gitignore(const char *dir) {
     fclose(f);
 }
 
-/* Recursive directory walk — deterministic DFS with lexically sorted
- * entries, mirroring GNU grep's traversal order so recursive output is
- * byte-identical. The per-file scan inside process_fd still parallelizes
- * within a large file; only the directory enumeration is serialized. */
-static void process_directory(const char *dir, const char *prefix) {
+/* Recursive directory walk — SOTA-5: batched parallel walker.
+ * Phase 1: enumerate all files deterministically (sorted DFS, GNU order).
+ * Phase 2: process files in parallel batches; each worker writes into its
+ *          own memory obuf.
+ * Phase 3: flush each file's buffered output in enumeration order — final
+ *          output is byte-identical to serial GNU-ordered output. */
+
+typedef struct { char *full; char *rel; } walk_file_t;
+
+static void walk_enumerate(const char *dir, const char *prefix,
+                           walk_file_t **files, size_t *n, size_t *cap) {
     DIR *d = opendir(dir);
     if (!d) return;
-    /* collect + sort entries for deterministic order (GNU grep sorts) */
-    char **names = NULL; size_t n = 0, cap = 0;
+    char **names = NULL; size_t nn = 0, ncap = 0;
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         const char *nm = de->d_name;
         if (nm[0] == '.' && (nm[1] == 0 || (nm[1] == '.' && nm[2] == 0))) continue;
         if (name_ignored(nm)) continue;
-        if (n == cap) { cap = cap ? cap * 2 : 16; names = realloc(names, cap * sizeof(char *)); }
-        names[n++] = strdup(nm);
+        if (nn == ncap) { ncap = ncap ? ncap * 2 : 16; names = realloc(names, ncap * sizeof(char *)); }
+        names[nn++] = strdup(nm);
     }
     closedir(d);
-    /* simple insertion sort (small N per dir) */
-    for (size_t i = 1; i < n; i++) {
+    for (size_t i = 1; i < nn; i++) {
         char *key = names[i]; size_t j = i;
         while (j > 0 && strcmp(names[j-1], key) > 0) { names[j] = names[j-1]; j--; }
         names[j] = key;
     }
-    obuf_t out; obuf_init(&out, 1);
-    for (size_t i = 0; i < n; i++) {
-        char full[4096];
+    for (size_t i = 0; i < nn; i++) {
+        char full[4096], rel[4096];
         snprintf(full, sizeof full, "%s/%s", dir, names[i]);
-        /* emit relative path WITHOUT a leading "./" (GNU grep -r with no
-         * explicit path does not prefix "./"); prefix is what we print. */
-        char rel[4096];
         if (prefix && prefix[0]) snprintf(rel, sizeof rel, "%s/%s", prefix, names[i]);
         else snprintf(rel, sizeof rel, "%s", names[i]);
         struct stat st;
         if (lstat(full, &st) != 0) { free(names[i]); continue; }
         if (S_ISDIR(st.st_mode)) {
-            process_directory(full, rel);
+            walk_enumerate(full, rel, files, n, cap);
         } else if (S_ISREG(st.st_mode)) {
-            if (g_include_n) { int ok=0; for (size_t z=0;z<g_include_n;z++) if (glob_match(g_include[z], names[i])) { ok=1; break; } if (!ok) { free(names[i]); continue; } }
-            if (g_exclude_n) { int skip=0; for (size_t z=0;z<g_exclude_n;z++) if (glob_match(g_exclude[z], names[i])) { skip=1; break; } if (skip) { free(names[i]); continue; } }
-            process_path(full, rel, &out);
+            int keep = 1;
+            if (g_include_n) { keep = 0; for (size_t z=0;z<g_include_n;z++) if (glob_match(g_include[z], names[i])) { keep=1; break; } }
+            if (keep && g_exclude_n) { for (size_t z=0;z<g_exclude_n;z++) if (glob_match(g_exclude[z], names[i])) { keep=0; break; } }
+            if (keep) {
+                if (*n == *cap) { *cap = *cap ? *cap * 2 : 256; *files = realloc(*files, *cap * sizeof(walk_file_t)); }
+                (*files)[*n].full = strdup(full);
+                (*files)[*n].rel = strdup(rel);
+                (*n)++;
+            }
         }
         free(names[i]);
     }
-    obuf_flush(&out); free(out.buf);
     free(names);
+}
+
+typedef struct { const char *full, *rel; obuf_t out; } walk_job_t;
+
+static void *walk_worker(void *arg) {
+    walk_job_t *j = (walk_job_t*)arg;
+    process_path(j->full, j->rel, &j->out);
+    return NULL;
+}
+
+static void process_directory(const char *dir, const char *prefix) {
+    walk_file_t *files = NULL; size_t nfiles = 0, capfiles = 0;
+    walk_enumerate(dir, prefix, &files, &nfiles, &capfiles);
+    if (nfiles == 0) { free(files); return; }
+
+    long nth = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nth < 1) nth = 1;
+    if (nth > 16) nth = 16;
+
+    obuf_t single_out; obuf_init(&single_out, 1);
+    const size_t BATCH = 4096;   /* large waves amortize thread spawn; bounded memory */
+    for (size_t b = 0; b < nfiles; ) {
+        size_t be = b + BATCH; if (be > nfiles) be = nfiles;
+        size_t cnt = be - b;
+        walk_job_t *jobs = calloc(cnt, sizeof(walk_job_t));
+        for (size_t i = 0; i < cnt; i++) {
+            jobs[i].full = files[b+i].full;
+            jobs[i].rel = files[b+i].rel;
+            obuf_init(&jobs[i].out, -1);
+        }
+        if (nth <= 1 || cnt == 1) {
+            for (size_t i = 0; i < cnt; i++) walk_worker(&jobs[i]);
+        } else {
+            /* main thread does job 0 while workers handle the rest */
+            size_t nw = cnt - 1; if (nw > (size_t)nth - 1) nw = (size_t)nth - 1;
+            pthread_t *th = malloc(nw * sizeof(pthread_t));
+            for (size_t i = 0; i < nw; i++)
+                pthread_create(&th[i], NULL, walk_worker, &jobs[i+1]);
+            walk_worker(&jobs[0]);
+            for (size_t i = 0; i < nw; i++) pthread_join(th[i], NULL);
+            free(th);
+            for (size_t i = nw + 1; i < cnt; i++) walk_worker(&jobs[i]);
+        }
+        for (size_t i = 0; i < cnt; i++) {
+            if (jobs[i].out.buf && jobs[i].out.len)
+                obuf_put(&single_out, jobs[i].out.buf, jobs[i].out.len);
+            free(jobs[i].out.buf);
+            jobs[i].out.buf = NULL; jobs[i].out.len = 0;
+        }
+        free(jobs);
+        b = be;
+    }
+    obuf_flush(&single_out); free(single_out.buf);
+
+    for (size_t i = 0; i < nfiles; i++) { free(files[i].full); free(files[i].rel); }
+    free(files);
 }
 
 /* ------------------------------------------------------------------ */
