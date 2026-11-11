@@ -9,6 +9,8 @@ Licensed under the WaefreBeorn Umbrella License v3.0.
 
 ---
 
+> **~WuBu~ AGI** — one system, many repositories. This is the **from-scratch grep**. The Body is [WuBuOS](https://github.com/waefrebeorn/WuBuOS), the Brain wubuwizard, the Compiler WuBuNOS.
+
 ## The argument, in one page
 
 In February 2025, Andrej Karpathy gave a name to a way of building software
