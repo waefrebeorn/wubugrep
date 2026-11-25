@@ -263,3 +263,15 @@ Canonical checkout; WuBuOS symlinks it (`wubuos/src/tools/wubugrep ->
 ## License
 
 WaefreBeorn Umbrella License v3.0 (SPDX: WaefreBeorn-UMV3).
+
+## Standard
+
+- **Layer:** text search tool (own SIMD matcher)
+- **Build:** `make`
+- **Verify:** `make test`
+- **Docs:** `docs/` in this repo
+- **Provenance:** own C11; no vendored third-party source without a note
+
+Part of the ~WuBu~ tree: this repository is held to the same conventions as
+the parent. See the parent's `docs/compendium/04-roadmap/submodule-standard.md`
+for the checklist and why each item exists.

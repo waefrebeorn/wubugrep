@@ -10,3 +10,8 @@ wubre_test
 # corpora / scratch
 *.txt.tmp
 corpus*
+# build output: never let a .d file show up as untracked
+*.d
+*.a
+build/
+*.bin
